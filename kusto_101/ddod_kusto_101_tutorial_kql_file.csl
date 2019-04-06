@@ -1,0 +1,233 @@
+///DDOD - KUSTO 101 TUTORIAL: Querying Data///
+//////////////////////////////////////////////
+
+
+//show all columns in a table equivalent to a select * query in T-SQL
+/////pipes (|) are used to denote new lines of code. I think of these as sequential operations performed on the data. 
+/////sort of like steps in a receipe. 
+StormEvents
+| limit 100
+////this query grabs 100 rows of data from the StormEvents Table, it includes all columns. 
+////alternatively you could use the "take" operator to accomplish the same thing (yay equifinality)
+
+//use the "project" operator to select a subset of columns.  
+StormEvents
+| project StartTime, EndTime, EventType 
+| limit 100
+///this query grabs a subset of columns from the StormEvents Table.
+///the limit operator is included to avoid timeouts and querying too much data. 
+///When exploring a new Kusto cluster and table it's advisible to use limit to avoid timeouts
+
+
+////Aggregations and Distinct Values////
+////////////////////////////////////////
+
+//use the summarize operator to perform aggregations 
+StormEvents
+| summarize Count=count() by EventType
+| order by Count desc
+///this query shows the number of events by event type
+///the summarize key word precedes aggregations, in this case we have a single aggregation but you could have multiple 
+///the "by" key word, tells Kusto what dimensional columns to group by 
+///note: here we are also explicitly naming the column with the counts as "Count"
+
+//use the summarize by operator without any aggregation operations between 'summarize' and 'by'
+//to obtain a distinct list of values in a dimension/categorical column
+StormEvents
+| summarize by EventType 
+///this query examines the EventType column to see what kinds of events are list
+///helpful when exploring the number of categories in a dimension
+
+////Filtering////
+/////////////////
+
+//use the where operator to find storm events that occur more than 4 times 
+StormEvents 
+| where State == 'FLORIDA'
+| summarize count_stormevents = count() by EventType   
+| where count_stormevents > 4
+///use a filter to identify the types of storm events that occur more than 4 times in florida
+///note that in KQL where you put the "where" operators can effect results. 
+///For example, if the "| where count_stormevents > 4" line was placed below the first "where"
+///operator the query would fail. Let's take a look 
+
+//adding the where operator using the count_stormevents before the summarize operator 
+//causes the query to fail 
+StormEvents 
+| where State == 'FLORIDA' 
+| where count_stormevents > 4
+| summarize count_stormevents = count() by StartTime, EventType 
+///this query fails because count_stormevents has not been created, there is nothing for Kusto to filter on
+///Note: when querying large amounts of data place your filters at the beginning of your query
+
+
+
+
+////Visualizations////
+/////////////////
+
+//use the render operator to create visualizations
+StormEvents 
+| where State == 'FLORIDA'
+| summarize count_stormevents = count() by StartTime, EventType   
+| where count_stormevents > 4
+| render timechart  
+///this query creates a timeline chart
+
+//use the render operator is not restricted to timeline charts
+StormEvents 
+| summarize count_stormevents = count() by  EventType   
+| where count_stormevents > 4
+| render columnchart 
+| order by count_stormevents desc 
+///this query creates bar chart arranged horizontally, use bar chart to arrange it vertically
+
+
+////Joining Tables in Kusto////
+///////////////////////////////
+
+
+//use the join operator to join two different tables together 
+//let's take a look at the documentation and some of their documentation before jumping into an example
+//documentation: https://docs.microsoft.com/en-us/azure/kusto/query/joinoperator
+//in general the syntax structure is this: Table1 | join (Table2) on CommonColumn, $left.Col1 == $right.Col2
+
+
+//The query below shows a few different things but for now let's focus on the join
+//let's have a look:
+let pluralsight_anids = cluster('Cgadataout').database('CustomerModel').vwAllCustomerActivity(ago(900d), now()) 
+	| where ActivityClassId == 'PluralSightActivities' 
+	| where CustomerKeyType == 'ANID' 
+	| summarize by CustomerKeyValue; 
+let pageview_visitorid = cluster('Cgadataout').database('CustomerTouchPoint').PageView 
+| where Site == "channel9.msdn.com" 
+| where Title contains "Azure" 
+| where Anid in (pluralsight_anids) 
+| summarize by VisitorId, Anid; 
+cluster('Cgadataout').database('CustomerTouchPoint').VideoView_Ch9 
+| where viewerId in (pageview_visitorid) 
+| summarize sum_percentage_complete = sum(percentage_complete)
+           ,avg_percentage_complete = avg(percentage_complete) 
+           ,var_percentage_complete = variance(percentage_complete)
+           ,sum_playing_time = sum(playing_time)
+           ,avg_playing_time = avg(playing_time)
+           ,var_playing_time = variance(playing_time)
+          by viewerId
+                  | join kind = inner hint.strategy = broadcast  (pageview_visitorid) on $left.viewerId == $right.VisitorId //Kusto Join syntax here
+///the query above shows how to join tables in Kusto. 
+///See this documentation for more info on joins and join hints: https://kusto.azurewebsites.net/docs/query/joinoperator.html
+
+
+////Creating and Joining Temp Tables in Kusto////
+/////////////////////////////////////////////////
+
+//lets take a look at the same query which uses a let statement to create a temp table and uses the join operator to join the temp table to the query
+let pluralsight_anids = cluster('Cgadataout').database('CustomerModel').vwAllCustomerActivity(ago(900d), now()) //temp table
+	| where ActivityClassId == 'PluralSightActivities' 
+	| where CustomerKeyType == 'ANID' 
+	| summarize by CustomerKeyValue; 
+let pageview_visitorid = cluster('Cgadataout').database('CustomerTouchPoint').PageView //temp table
+| where Site == "channel9.msdn.com" 
+| where Title contains "Azure" 
+| where Anid in (pluralsight_anids) 
+| summarize by VisitorId, Anid; 
+cluster('Cgadataout').database('CustomerTouchPoint').VideoView_Ch9 
+| where viewerId in (pageview_visitorid) 
+| summarize sum_percentage_complete = sum(percentage_complete)
+           ,avg_percentage_complete = avg(percentage_complete) 
+           ,var_percentage_complete = variance(percentage_complete)
+           ,sum_playing_time = sum(playing_time)
+           ,avg_playing_time = avg(playing_time)
+           ,var_playing_time = variance(playing_time)
+          by viewerId
+                  | join kind = inner hint.strategy = broadcast  (pageview_visitorid) on $left.viewerId == $right.VisitorId //Kusto Join syntax here
+///A temp table called pageview_visitorid is created by the let operator. 
+///This temp table is then joined to the above query, which queries VideoView_Ch9
+///NOTE!: the let operator must be terminated with a semicolon (;) and must be connected to another query, it cannot be used to create a stand alone temp table or variable
+
+
+
+
+////////////////Tips and Tricks////////////////
+///////////////////////////////////////////////
+
+///This is the same query we have been working with. Let's look at the join again. 
+///Using a hint.strategy operator can make your joins more effecient 
+let pluralsight_anids = cluster('Cgadataout').database('CustomerModel').vwAllCustomerActivity(ago(900d), now()) 
+	| where ActivityClassId == 'PluralSightActivities' 
+	| where CustomerKeyType == 'ANID' 
+	| summarize by CustomerKeyValue; 
+let pageview_visitorid = cluster('Cgadataout').database('CustomerTouchPoint').PageView 
+| where Site == "channel9.msdn.com" 
+| where Title contains "Azure" 
+| where Anid in (pluralsight_anids) 
+| summarize by VisitorId, Anid; 
+cluster('Cgadataout').database('CustomerTouchPoint').VideoView_Ch9 
+| where viewerId in (pageview_visitorid) 
+| summarize sum_percentage_complete = sum(percentage_complete)
+           ,avg_percentage_complete = avg(percentage_complete) 
+           ,var_percentage_complete = variance(percentage_complete)
+           ,sum_playing_time = sum(playing_time)
+           ,avg_playing_time = avg(playing_time)
+           ,var_playing_time = variance(playing_time)
+          by viewerId
+                  | join kind = inner hint.strategy = broadcast  (pageview_visitorid) on $left.viewerId == $right.VisitorId 
+                  //notice in the above kusto query code the "hint.strategy = broadcast, 
+///For more on the hint.strategy operator see the documentation (https://docs.microsoft.com/en-us/azure/kusto/query/broadcastjoin)
+
+
+
+///Kusto can also query across databases, in the same cluster, as well as across clusters. 
+///See this link for more info on cross-cluster joins :https://docs.microsoft.com/en-us/azure/kusto/query/broadcastjoin)
+let pluralsight_anids = cluster('Cgadataout').database('CustomerModel').vwAllCustomerActivity(ago(900d), now()) 
+	| where ActivityClassId == 'PluralSightActivities' 
+	| where CustomerKeyType == 'ANID' 
+	| summarize by CustomerKeyValue; 
+let pageview_visitorid = cluster('Cgadataout').database('CustomerTouchPoint').PageView  //Table1
+| where Site == "channel9.msdn.com" 
+| where Title contains "Azure" 
+| where Anid in (pluralsight_anids) 
+| summarize by VisitorId, Anid; 
+cluster('Cgadataout').database('CustomerTouchPoint').VideoView_Ch9  //Table2
+| where viewerId in (pageview_visitorid) 
+| summarize sum_percentage_complete = sum(percentage_complete)
+           ,avg_percentage_complete = avg(percentage_complete) 
+           ,var_percentage_complete = variance(percentage_complete)
+           ,sum_playing_time = sum(playing_time)
+           ,avg_playing_time = avg(playing_time)
+           ,var_playing_time = variance(playing_time)
+          by viewerId
+                  | join kind = inner hint.strategy = broadcast  (pageview_visitorid) on $left.viewerId == $right.VisitorId
+///lines 182 and 186 are two different tables, but by referencing them excplicitly we can join these tables
+///Note: this is a cross-database join, but in the same cluster. 
+
+
+/////////Kusto Query Limits/////////
+////////////////////////////////////
+
+
+///kusto has some frustrating query limits which is odd given it was designed to effeciently query terabytes of data
+///...at any rate the docs have more info https://docs.microsoft.com/en-us/azure/kusto/concepts/querylimits
+//And fortunately there is KQL code that lets you get around these limits:
+set truncationmaxrecords=3000000; 
+set maxmemoryconsumptionperiterator=260719476736; 
+///these lines of kusto code sets max records and memory beyond defaults
+//note: these must be at the top of a kusto query and must end with a semicolon. The memory operator can be between 50-60% of your RAM
+
+
+/////////Kusto Parson JSON Objects/////////
+///////////////////////////////////////////
+
+
+///Kusto contains an object type called "Dynamic" but basically holds JSON objects
+///lets have a look at how to parse this type of field cluster('Cgadataout').database('CustomerModel').vwAllCustomerActivity(ago(900d), now())| where ActivityClassId == 'PluralSightActivities'///the query results shows a dynamic data type field called properties. ///note that the field is a JSON-like object///to parse a Dynamic aka JSON type data column/field use the extend operator  ///extend operator documentation: https://docs.microsoft.com/en-us/azure/kusto/query/extendoperator///note that the extend operator is also used to create calculated columns cluster('Cgadataout').database('CustomerModel').vwAllCustomerActivity(ago(900d), now())
+| where ActivityClassId == 'PluralSightActivities'| extend CourseName =Properties.CourseName| extend ModuleName = Properties.ModuleName| extend OfferCode = Properties.OfferCode| extend ViewTimeSeconds = Properties.ViewTimeSeconds
+///now we see that we have both the dynamic operator and see it's been parsed out into individual columns 
+
+
+
+////////KUSTO IN PYTHON//////
+/////////////////////////////
+///on to the notebooks!
+
+ 
